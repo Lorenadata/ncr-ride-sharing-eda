@@ -42,8 +42,8 @@ All 150,000 records preserved. Three indicator variables added:
 - **Report**: Quarto (.qmd → HTML)
 - **Libraries**: tidyverse, naniar, DataExplorer, dbscan, patchwork, janitor, hms, readr, class
 
-## Report
-👉 -->  [View full analysis](https://lorenadata.github.io/ncr-ride-sharing-eda/))
+## Report(html)
+👉 -->  [View full analysis]((https://lorenadata.github.io/ncr-ride-sharing-eda/))
 
 ## Project structure
 \```
