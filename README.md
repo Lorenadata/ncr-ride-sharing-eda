@@ -43,18 +43,15 @@ All 150,000 records preserved. Three indicator variables added:
 - **Libraries**: tidyverse, naniar, DataExplorer, dbscan, patchwork, janitor, hms, readr, class
 
 ## Report
-👉 [View full analysis](TU_LINK_GITHUB_PAGES_AQUI)
+👉 -->  [View full analysis](https://lorenadata.github.io/ncr-ride-sharing-eda/))
 
 ## Project structure
 \```
-ncr-ride-sharing-eda/
-├── data/
-│   └── ncr_ride_bookings.csv
-├── R/
-│   └── Funciones_propias.R
-├── ncr_eda_cleaning.qmd
-├── ncr_eda_cleaning.html
-└── README.md
+ncr-ride-sharing-eda --> ncr_ride_bookings.csv
+R --> Funciones_propias.R
+--> ncr_eda_cleaning.qmd
+--> ncr_eda_cleaning.html
+--> README.md
 \```
 
 ## Author
