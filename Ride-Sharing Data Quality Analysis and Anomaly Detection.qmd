@@ -1,0 +1,630 @@
+---
+title: "Ride-Sharing Data Quality Analysis and Anomaly Detection"
+
+format: pdf
+---
+
+# 1. Introducción
+
+Las plataformas de transporte bajo demanda generan volúmenes masivos de datos operacionales en tiempo real. La calidad de estos datos es fundamental para la toma de decisiones en áreas críticas como la asignación de conductores, la fijación dinámica de precios y el análisis de satisfacción del cliente.
+
+El presente documento recoge el análisis exploratorio y depuración del dataset *NCR Ride Bookings*, que contiene 150.000 registros de viajes realizados a través de una plataforma de ride-sharing en la región de Delhi NCR (India). El dataset incluye información sobre el estado de la reserva, tiempos de espera, distancia, valor del trayecto, valoraciones de conductores y clientes, y motivos de cancelación, entre otras variables.
+
+El objetivo principal es identificar y tratar los problemas de calidad presentes en los datos (valores ausentes, duplicados, inconsistencias y valores extremos), dejando el dataset en condiciones óptimas para un análisis posterior. A lo largo del documento se justifica cada decisión de tratamiento tomada, siguiendo los principios del análisis exploratorio riguroso.
+
+| **Column Name** | **Description** |
+|:-----------------------------------|:-----------------------------------|
+| `Date` | Date of the booking |
+| `Time` | Time of the booking |
+| `Booking ID` | Unique identifier for each ride booking |
+| `Booking Status` | Status of booking (Completed, Cancelled by Customer, Cancelled by Driver, etc.) |
+| `Customer ID` | Unique identifier for customers |
+| `Vehicle Type` | Type of vehicle (Go Mini, Go Sedan, Auto, eBike/Bike, UberXL, Premier Sedan) |
+| `Pickup Location` | Starting location of the ride |
+| `Drop Location` | Destination location of the ride |
+| `Avg VTAT` | Average time for driver to reach pickup location (in minutes) |
+| `Avg CTAT` | Average trip duration from pickup to destination (in minutes) |
+| `Cancelled Rides by Customer` | Customer-initiated cancellation flag |
+| `Reason for cancelling by Customer` | Reason for customer cancellation |
+| `Cancelled Rides by Driver` | Driver-initiated cancellation flag |
+| `Driver Cancellation Reason` | Reason for driver cancellation |
+| `Incomplete Rides` | Incomplete ride flag |
+| `Incomplete Rides Reason` | Reason for incomplete rides |
+| `Booking Value` | Total fare amount for the ride |
+| `Ride Distance` | Distance covered during the ride (in km) |
+| `Driver Ratings` | Rating given to driver (1-5 scale) |
+| `Customer Rating` | Rating given by customer (1-5 scale) |
+| `Payment Method` | Method used for payment (UPI, Cash, Credit Card, Uber Wallet, Debit Card) |
+
+# 2. Carga de datos y exploración inicial
+
+## 2.1 Librerías
+
+```{r}
+library(tidyverse)   # incluye ggplot2, dplyr, readr...
+library(naniar)      # visualización de missings
+library(DataExplorer)
+library(patchwork)
+library(dbscan)
+library(hms)
+library(readr)
+library(dplyr)
+library(class)
+```
+
+## 2.2 Importación del dataset
+
+```{r}
+data <- read_csv("archive/ncr_ride_bookings.csv")
+```
+
+## 2.3 Primeras inspecciones
+
+El dataset cuenta con 150.000 observaciones y 21 variables. A continuación se realiza una primera inspección para entender la estructura general antes de abordar la limpieza.
+
+```{r}
+glimpse(data)
+
+"
+Las variables 'Date' y 'Time' han sido correctamente interpretadas como 
+<date> y <time>. Sin embargo, se observan varias variables numéricas 
+almacenadas como <chr>, lo que sugiere la presencia de valores interpretados incorrectamente. Esto se analizará en detalle en la sección 3. Además, variables como 'Payment Method' o 'Booking Status' deberían interpretarse como <factor>.
+"
+
+summary(data)
+
+```
+
+# 3. Detección y tratamiento de errores
+
+## 3.1 Tipos de variables y coherencia
+
+```{r}
+# Nombres corrector para la base de datos 
+data <- janitor::clean_names(data)
+glimpse(data)
+```
+
+```{r}
+# FECHA Y HORA 
+
+data$date <- as.Date(data$date)
+is.Date(data$date) 
+
+data$time <- as_hms(data$time)
+is_hms(data$time)
+```
+
+```{r}
+# CAMBIO A FACTOR 
+
+data$booking_status <- as.factor(data$booking_status)
+class(data$booking_status)
+levels(data$booking_status)
+
+data$vehicle_type <- as.factor(data$vehicle_type)
+levels(data$vehicle_type)
+
+data$payment_method <- as.factor(data$payment_method)
+levels(data$payment_method)
+```
+
+```{r}
+
+# VARIABLES NUMÉRICAS
+
+data$avg_vtat <- as.numeric(data$avg_vtat)
+data$avg_ctat <- as.numeric(data$avg_ctat)
+
+data$booking_value <- as.numeric(data$booking_value)
+data$ride_distance <- as.numeric(data$ride_distance)
+data$driver_ratings <- as.numeric(data$driver_ratings)
+data$customer_rating <- as.numeric(data$customer_rating)
+
+```
+
+```{r}
+# VARIABLES DICOTÓMICAS
+
+data$cancelled_rides_by_customer <- ifelse(data$cancelled_rides_by_customer == 1, 1, 0)
+is.numeric(data$cancelled_rides_by_customer)
+
+data$cancelled_rides_by_driver <- ifelse(data$cancelled_rides_by_driver ==1, 1, 0)
+is.numeric(data$cancelled_rides_by_driver)
+
+data$incomplete_rides <- ifelse(data$incomplete_rides == 1, 1, 0)
+```
+
+Las variables 'Pickup Location', y 'Drop Location' tienen 176 niveles en factor, por lo tanto, de momento seguirán siendo \<chr\>. Más adelante, podría considerar coger las direcciones más habituales para poder analizar mejor esta variable.
+
+Las variables 'Avg VTAT' (Vehicle Turnaround Time) y 'Avg CTAT' (Customer Trip Arrival Time) representan tiempos en minutos y serán tratadas como variables numéricas continuas. Los valores 'null' se convierten directamente a 'NA'.
+
+La variable 'booking_value' y 'ride_distance' se han convertido a numérica.
+
+Las variables 'cancelled_rides_by_customer' , 'cancelled_rides_by_driver', y 'incomplete_rides' tienen valores 'null' y '1', por lo que he considerado sustituir 'null' por '0', y dejar los valores '1'.
+
+Por último, las variables 'driver_cancellation_reason' y 'reason_for_cancelling_by_customer' no se van a modificar, ya que para un análisis posterior de los motivos de cancelaciones se podrá filtrar donde la variable dicotómica sea '1'.
+
+**Categorización de variables**
+
+```{r}
+# DRIVER_RATINGS
+data$driver_ratings_factor <- cut(data$driver_ratings, breaks = c(0,1,2,3,4,5), labels = c("Pésimo", "Mal", "Normal", "Bien", "Muy bien"))
+table(data$driver_ratings_factor)
+
+data <- data |>
+  mutate(
+    driver_ratings_factor = case_when(
+      driver_ratings <= 1 ~ "Pésimo",           
+      driver_ratings > 1 & driver_ratings <= 2 ~ "Mal",   
+      driver_ratings > 2 & driver_ratings <= 3 ~ "Normal",
+      driver_ratings > 3 & driver_ratings <= 4 ~ "Bien", 
+      driver_ratings > 4 ~ 'Muy bien'
+    ),
+    driver_ratings_factor = factor(driver_ratings_factor, levels = c("Pésimo", "Mal", "Normal", "Bien", "Muy bien"))
+  )
+
+# CUSTOMER_RATING 
+data$customer_ratings_factor <- cut(data$customer_rating, breaks = c(0,1,2,3,4,5), labels = c("Pésimo", "Mal", "Normal", "Bien", "Muy bien"))
+table(data$customer_ratings_factor)
+
+data <- data |>
+  mutate(
+    customer_ratings_factor = case_when(
+      customer_rating <= 1 ~ "Pésimo",           
+      customer_rating > 1 & customer_rating <= 2 ~ "Mal",   
+      customer_rating > 2 & customer_rating <= 3 ~ "Normal",
+      customer_rating > 3 & customer_rating <= 4 ~ "Bien", 
+      driver_ratings > 4 ~ 'Muy bien'
+    ),
+    customer_ratings_factor = factor(customer_ratings_factor, levels = c("Pésimo", "Mal", "Normal", "Bien", "Muy bien"))
+  )
+```
+
+En este caso, he categorizado 'driver_ratings' y 'customer_rating' para poder analizar mejor estas variables con cinco niveles distintos: 'Pésimo', 'Mal', 'Normal', 'Bien', y 'Muy bien'.
+
+## 3.2 Duplicados
+
+NIVEL 1: Empezaré mirando el primer nivel: filas completamente duplicadas.
+
+```{r}
+# Cuántos duplicados hay: no hay duplicados
+sum(duplicated(data))
+```
+
+NIVEL 2: Cada reserva debería tener un único identificador.
+
+```{r}
+
+# Número de veces  con 'booking_id' repetido
+data |> count(booking_id, sort = TRUE) |> filter(n > 1)
+
+# Comprobación de datos idénticos o no
+data |> filter(booking_id == '\"CNR2726142\"')
+
+
+# Indicación de los duplicados con una flag
+data <- data |> group_by(booking_id) |> mutate(id_duplicado = n() > 1) |> 
+  ungroup()
+
+# Cuántos registros están afectados
+data |> count(id_duplicado)
+
+# porcentaje
+2457 / nrow(data) * 100
+
+# gráfico 
+
+data |> count(id_duplicado) |> mutate(porcentaje = n / sum(n) * 100, id_duplicado = if_else(id_duplicado, "Duplicado", "Único")) |> 
+  
+  # gráfico representativo 
+  ggplot(aes(x = id_duplicado, y = porcentaje, fill = id_duplicado)) +
+  geom_col() + geom_text(aes(label = paste0(round(porcentaje, 1), "%")),    vjust = -0.5) + theme_minimal() + labs(title = "Proporción de Booking     IDs duplicados", x = NULL, y = "Porcentaje") + theme(legend.position =    "none")
+```
+
+Se detectan 1.224 'booking_id' duplicados cuyos registros presentan datos completamente distintos entre sí, lo que sugiere un fallo en el sistema de generación de identificadores únicos. Dado que no es posible determinar qué registro es el correcto, se opta por marcarlos mediante una variable indicadora 'id_duplicado' en lugar de eliminarlos o modificarlos para análisis posteriores. Esta cantidad afecta a 2.457 registros (1,6% del total).
+
+NIVEL 3: Mismo cliente, misma fecha, misma hora, mismo destino.
+
+```{r}
+data |> group_by(customer_id, date, time, pickup_location, drop_location) |> filter(n() > 1) |> arrange(customer_id, date) |> ungroup()
+```
+
+No se ha encontrado ningún caso en que el mismo cliente tuviera dos viajes registrados con idéntica fecha, hora, origen y destino, lo que descarta duplicación funcional de registros.
+
+## 3.3 Valores imposibles o inconsistentes
+
+```{r}
+data |>
+select(where(is.numeric)) |>
+pivot_longer(everything(), names_to = "variable", values_to = "valor") |>
+ggplot(aes(x = valor, fill = variable)) +
+geom_histogram(color = "black", bins = 30, show.legend = FALSE) +
+facet_wrap(~variable, scales = "free") +
+labs(title = "Histogramas de variables numéricas", x = "Valores", y = "Frecuencia") +
+theme_minimal()
+```
+
+```{r}
+data |>
+select(booking_status, vehicle_type, payment_method, driver_ratings_factor, customer_ratings_factor) |>
+pivot_longer(everything(), names_to = "variable", values_to = "valor") |>
+ggplot(aes(x = valor, fill = variable)) +
+geom_bar(color = "black") +
+facet_wrap(~variable, scales = "free", ncol = 2) +
+labs(
+title = "Distribución de variables categóricas",
+x = "Categorías",
+y = "Frecuencia"
+) +
+theme_minimal() +
+theme(
+axis.text.x = element_text(angle = 45, hjust = 1),
+legend.position = "none"
+)
+```
+
+```{r}
+data$payment_method <- recode(data$payment_method, 'null' = NA_character_)
+
+```
+
+En este caso, convertiré la 'null' de la variable 'payment_method' a NA para análisis posteriores de valores perdidos.
+
+A partir de los histogramas de las variables numéricas no se puede ver ningún valor imposible y se observan los siguientes patrones:
+
+**'booking_value'** presenta una distribución claramente asimétrica con una alta concentración de valores bajos y una cola larga hacia valores elevados. Este comportamiento sugiere la existencia de valores extremos o poco frecuentes dentro de la variable.
+
+**'avg_ctat' y 'avg_vtat'** muestras distribuciones continuas estables y sin discontinuidades claras.
+
+'**ride_distance'** presenta una distribución bastante homogénea dentro de su rango sin valores negativos, ni concentraciones anómalas.
+
+**'cutomer_rating' y 'driver_ratings'** se concentran en valores altos (3, 4 y 5). El tratamiento de NA se tratará en apartados posteriores.
+
+**'cancelled_rides_by_customer' y 'cancelled_rides_by_driver'** presentan una distribución binaria (valores 0 y 1), con una predominancia del valor 0, lo que indica baja frecuencia de cancelaciones.
+
+En cuanto a las variables categóricas, se identifican los siguientes aspectos:
+
+'**booking_status'** muestra que la mayoría de los registros corresponden a viajes completados.
+
+**'payment_method'** tiene muchos valores 'null', por lo que habrá que considerarlo en la detección de valores faltantes.
+
+# 4. Análisis de valores missing
+
+## 4.1 Detección y visualización
+
+Se analiza la presencia de valores ausentes en el dataset tras la limpieza inicial. Dado que muchas variables solo toman valor en determinadas situaciones (viaje completado, cancelación por cliente, etc.), se espera encontrar un patrón de missings estructural relacionado con 'booking_status'.
+
+```{r}
+# Porcentaje de missings por variable
+gg_miss_var(data, show_pct = TRUE)
+
+# Número de celdas missing en todo el dataset
+n_miss(data)
+
+# Porcentaje de filas completas si borramos todas las filas que contienen al menos un dato missing
+pct_complete_case(data) 
+
+
+# Número de filas completas si borramos todas las filas que contienen al menos un datos missing
+n_case_complete(data)
+
+# Heatmap de patrón de missings
+vis_miss(data, warn_large_data = FALSE)
+
+```
+
+En la base de datos hay 401.988 celdas missing en todo el dataset. Además, si borramos todas las filas donde hay al menos un missing habría un 49 % de filas completas. Esto es un problema que hay que resolver porque puede afectar seriamente al análisis de los datos.
+
+## 4.2 Patrón de missings (MCAR, MAR, MNAR)
+
+```{r}
+# Missings por variable y por booking_status
+gg_miss_var(data, facet = booking_status)
+```
+
+El análisis por 'booking_status' revela que los missings no son aleatorios (MCAR), sino que responden a la lógica operacional del negocio. Se trata de missings de tipo MNAR (Missing not at random). Las variables de valoración y métricas económicas presentan missings sistemáticos en viajes no completados, donde dichos valores no pueden existir por definición.
+
+```{r}
+data |> 
+  group_by(booking_status) |> 
+  summarise(
+    missing_rating = sum(is.na(driver_ratings)),
+    missing_value  = sum(is.na(booking_value)),
+    missing_dist   = sum(is.na(ride_distance)),
+    n = n()
+  )
+```
+
+Se identifican dos patrones MNAR diferenciados. El primero es en las variables 'booking_value', 'ride_distance', 'driver_ratings' y 'customer_rating', las cuales presentan missings en viajes no completados (cancelados, incompletos o sin conductor). Estos valores no pueden existir porque no se ha realizado el viaje. Por lo tanto, no deben imputarse.
+
+Por otro lado, 'customer_rating' presenta missings en viajes completados, pero esto puede ser por decisión voluntaria del cliente donde la valoración es opcional. En este caso, podría considerarse la opción de imputar.
+
+## 4.3 Imputaciones y justificación
+
+Según el análisis previo, se puede concluir que no hay que imputar ningún valor, ya que se los missings se corresponden a MNAR. Sin embargo, en el caso de 'customer_rating' con viajes completados, probaré varios métodos para imputar estos datos.
+
+IMPUTACIÓN CON MODELO DE REGRESIÓN
+
+```{r}
+library(dplyr)
+vis_miss(select(data,customer_rating,driver_ratings))
+
+vis_miss(select(data, customer_rating,))
+```
+
+```{r}
+#Ajustar un modelo de regresión lineal de 'customer_rating' y 'driver_ratings'
+model1 <- lm(customer_rating ~ driver_ratings, data = data)
+summary(model1)
+
+#Predecir los valores solo para las observaciones faltantes 
+predictions <- predict(model1,newdata = data [is.na(data$customer_rating),]) 
+
+##Crear una nueva variable de linelist con la temperatura imputada
+data$customer_rating_imp_model1 <- data$customer_rating
+data$customer_rating_imp_model1[is.na(data$customer_rating)]<- predictions
+```
+
+```{r}
+#Hacer un gráfico para comparar las observaciones
+ggplot(data, aes(x = customer_rating, fill = "customer_rating")) +  geom_density(alpha = 0.5) +  
+geom_density(aes(x = customer_rating_imp_model1, fill = "customer_rating_imp_model1"), alpha = 0.5)
+```
+
+IMPUTACIÓN CON LA MEDIA
+
+```{r}
+data$customer_rating_imp <- data$customer_rating #Nueva variable
+mean(data$customer_rating_imp, na.rm = TRUE) #Media
+# 38.55829
+data$customer_rating_imp[is.na(data$customer_rating_imp)] <- mean(data$customer_rating_imp, na.rm = TRUE) #Imputación
+
+
+##Gráfico para representar las diferencias  
+ggplot(data, aes(x = customer_rating, fill = "customer_rating")) +  
+geom_density(alpha = 0.5) +  
+geom_density(aes(x = customer_rating_imp, fill = "customer_rating_imp"), alpha = 0.5) 
+
+```
+
+Al imputar con la media, no parece muy correcto, ya que varía mucho y se ve un pico en el valor de 4.4 aproximadamente.
+
+```{r}
+# Hacer un gráfico para comparar las observaciones con la media y la regresión
+ggplot(data, aes(x = customer_rating, fill = "customer_rating")) +  geom_density(alpha = 0.5) +  
+geom_density(aes(x = customer_rating_imp_model1, fill = "customer_rating_imp_model1"), alpha = 0.5) +  
+geom_density(aes(x = customer_rating_imp, fill = "customer_rating_imp"), alpha = 0.5)
+```
+
+# 5. Análisis univariante, posibles outliers y extremos.
+
+```{r}
+source('Funciones_propias.R')
+# Obtención de los nombres de las columnas numéricas
+numeric_vars <- names(data)[sapply(data, is.numeric)]
+
+# Uso de una función propia para pasar 'data' y el 'nombre'
+outliers_results <- lapply(numeric_vars, function(v) outliers_extreme(data, v))
+```
+
+```{r}
+ggplot(data, aes(x=booking_value)) +
+  geom_histogram(fill = "skyblue")
+```
+
+Para hacer el análisis univariante se ha utilizado una función adicional para ver los extremos y outliers de cada variable junto con el porcentaje que representa.
+
+Primeramente, se puede ver que la variable 'booking_value' tiene 3.435 'outliers' a primera vista (3,37%), y una cantidad de 911 valores extremos (0,89%). La distribución es asimétrica con cola larga con una alta concentración de valores en rangos bajos y una cola larga que se extiende hacia valores elevados. El boxplot identifica un número considerable de observaciones fuera del rango intercuartílico, lo que indica la presencia de múltiples outliers según el criterio estadístico del IQR. A diferencia de otras variables como las valoraciones, estos valores extremos no pueden descartarse automáticamente como observaciones válidas poco frecuentes, ya que podrían corresponder tanto a casos reales (por ejemplo, viajes de larga distancia o tarifas elevadas) como a posibles inconsistencias en los datos. Por tanto, estos valores requieren un análisis más detallado en etapas posteriores para determinar su naturaleza y decidir el tratamiento más adecuado.
+
+Por otro lado, las variables 'driver_ratings' y 'customer_rating' también cuentan con posibles outliers a primera vista representando un 5,59% y 3,5% respectivamente. Aunque el boxplot identifica valores bajos como outliers según el criterio estadístico del IQR, estos se encuentran dentro del rango válido de la variable (1–5). Por tanto, no pueden considerarse valores atípicos en términos reales, sino observaciones poco frecuentes debido a la concentración de valoraciones en rangos altos.
+
+# 6. Análisis bivariante
+
+Para poder ver si los outliers de la variable 'booking_value' tienen algún tipo de asociación con otra variable, se realizarán a continuación varios gráficos para identificar claramente las posibles relaciones.
+
+```{r}
+# Gráfico 1: Booking Value por tipo de vehículo
+p1 <- ggplot(data, aes(x = vehicle_type, y = booking_value)) +
+  geom_boxplot(fill = "lightblue") +
+  labs(title = "Valor del viaje vs tipo de vehículo", x = "Tipo de vehículo", y = 'Valor del viaje') 
+
+# Gráfico 2: Pressure Height por día de la semana
+p2 <- ggplot(data, aes(x = payment_method, y = booking_value)) +
+  geom_boxplot(fill = "lightgreen") +
+  labs(title = "Valor del viaje vs método de pago", x = "Método de pago", y = "Valor del viaje") 
+
+# Combinar ambos gráficos en una fila
+p1 + p2
+```
+
+```{r}
+# GRÁFICOS CON VARIABLES CUANTITATIVAS 
+ggp <- ggplot(data,aes(y = booking_value, x = ride_distance)) + geom_point()
+ggp + stat_smooth(method = "lm",
+                  formula = y ~ x,
+                  geom = "smooth")
+
+summary(lm(data$booking_value~data$ride_distance))
+
+
+ggp2 <- ggplot(data,aes(y = booking_value, x = time)) + geom_point()
+ggp2 + stat_smooth(method = "lm",
+                  formula = y ~ x,
+                  geom = "smooth")
+
+ggp3 <- ggplot(data,aes(y = booking_value, x = avg_vtat)) + geom_point()
+ggp3 + stat_smooth(method = "lm",
+                  formula = y ~ x,
+                  geom = "smooth")
+
+
+```
+
+Tras relacionar la variable del valor del viaje y la distancia no hay ninguna relación. El modelo de regresión tiene un R\^2 de un valor muy bajo, y el resto de valores también son muy malos. Esto es extraño porque normalmente el valor de un viaje suele ir relacionado con la distancia, el tipo de vehículo o la distancia recorrida.
+
+# 7. Análisis multivariante
+
+```{r}
+# Selección y escalado
+datos_lof <- data |> 
+  select(where(is.numeric)) |> 
+  na.omit() |> 
+  select(where(~var(.) > 0))
+
+datos_lof_scaled <- scale(datos_lof)
+
+# Cálculo LOF
+k <- round(log(nrow(datos_lof)))
+lof_scores <- lof(datos_lof_scaled, minPts = k)
+
+# Añadir scores al dataframe limpio
+datos_lof <- datos_lof |> 
+  mutate(lof_score = lof_scores)
+
+# Ver outliers con score > 1.5
+datos_lof |> 
+  filter(lof_score > 1.5) |> 
+  arrange(desc(lof_score))
+
+# Boxplot
+ggplot(datos_lof, aes(y = lof_score)) +
+  geom_boxplot(fill = "skyblue", outlier.color = "red", outlier.shape = 16) +
+  theme_minimal() +
+  labs(title = "Distribución de LOF Scores")
+
+```
+
+El algoritmo LOF identifica un único registro con score superior a 1.5, correspondiente a un viaje de larga distancia (49 km) con valor elevado (1.259) y valoración del cliente excepcionalmente baja (1.55). Esta combinación inusual de variables no sería detectable mediante métodos univariantes como el IQR, lo que ilustra la utilidad del enfoque multivariante.
+
+```{r}
+p1 <- ggplot(datos_lof, aes(x = ride_distance, y = booking_value, colour = lof_score)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_gradient(low = "blue", high = "red", name = "LOF Score") +
+  theme_minimal() +
+  labs(title = "LOF: Distancia vs Valor del viaje",
+       x = "Distancia (km)", y = "Valor (INR)")
+
+p2 <- ggplot(datos_lof, aes(x = avg_vtat, y = avg_ctat, colour = lof_score)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_gradient(low = "blue", high = "red", name = "LOF Score") +
+  theme_minimal() +
+  labs(title = "LOF: Tiempo de espera vs Duración del viaje",
+       x = "Tiempo hasta pickup (min)", y = "Duración del viaje (min)")
+
+p3 <- ggplot(datos_lof, aes(x = ride_distance, y = customer_rating, colour = lof_score)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_gradient(low = "blue", high = "red", name = "LOF Score") +
+  theme_minimal() +
+  labs(title = "LOF: Distancia vs Valoración del cliente",
+       x = "Distancia (km)", y = "Valoración cliente")
+
+p4 <- ggplot(datos_lof, aes(x = booking_value, y = driver_ratings, colour = lof_score)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_gradient(low = "blue", high = "red", name = "LOF Score") +
+  theme_minimal() +
+  labs(title = "LOF: Valor del viaje vs Valoración conductor",
+       x = "Valor (INR)", y = "Valoración conductor")
+
+(p1 + p2) / (p3 + p4)
+```
+
+Los gráficos de dispersión coloreados por LOF score revelan que los posibles valores atípicos multivariantes se concentran principalmente en viajes con valor económico elevado desproporcionado respecto a la distancia recorrida. Adicionalmente, se observa que las variables de valoración presentan distribución discreta, lo que limita la capacidad del LOF para detectar anomalías en esas dimensiones. Sin embargo, ningún dato supera el 2, por lo que no hay ningún valor atípico.
+
+## 7.1 Matriz de correlaciones
+
+```{r}
+
+cor_matrix <- cor(datos_lof, use = "complete.obs")
+cor_matrix
+
+library(corrplot)
+corrplot(cor_matrix, method = "color")
+```
+
+No se observan correlaciones fuertes entre las variables del dataset, lo que indica baja redundancia entre ellas. Se aprecia una ligera correlación positiva entre booking_value y lof_score, lo que sugiere que valores extremos en el importe pueden ser identificados como observaciones atípicas.
+
+Asimismo, se observa una ligera correlación negativa entre lof_score y las variables de rating, indicando que las observaciones más atípicas tienden a asociarse con valoraciones más bajas.
+
+## 7.2 PCA o visualizaciones multivariantes
+
+```{r}
+# Ejecutamos un PCA rápido sobre las variables numéricas
+pca_res <- prcomp(datos_lof, center = TRUE)
+
+# Creamos un dataframe para graficar
+df_pca <- as.data.frame(pca_res$x)
+df_pca$lof <- lof_scores
+
+ggplot(df_pca, aes(x = PC1, y = PC2, color = lof)) +
+  geom_point(aes(size = lof)) +
+  scale_color_gradient(low = "lightgrey", high = "darkorange") +
+  labs(title = "Proyección PCA y Puntuación LOF",
+       subtitle = "Los outliers se alejan del centro de la masa de datos en el espacio latente") +
+  theme_bw()
+```
+
+La proyección PCA confirma visualmente los resultados del LOF. La mayoría de registros se agrupa en una masa densa hacia la derecha del espacio latente, correspondiente a viajes con comportamiento típico. Los valores atípicos detectados por LOF se alejan progresivamente de esta masa, concentrándose en la zona inferior izquierda del gráfico. Este patrón valida que las anomalías identificadas pueden ser atípicas en el espacio multivariante, pero al hacer una vista completa de los datos se puede comprobar que no hay ninguna anomalía ya que son valores normales (\<2) dentro del dataset.
+
+```{r}
+# Identificar índices con LOF > 1.5
+indices_outliers <- which(datos_lof$lof_score > 1.5)
+
+# Ver esos registros en el dataset original
+data[indices_outliers, ]
+
+# Marcar los outliers con una flag en lugar de eliminar
+data <- data |> 
+  mutate(es_outlier_lof = booking_id %in% data[indices_outliers, ]$booking_id)
+
+
+```
+
+Los registros identificados como atípicos por LOF no presentan valores imposibles sino combinaciones inusuales de variables. Por ello se opta por marcarlos mediante una variable indicadora `es_outlier_lof` en lugar de eliminarlos, preservando la integridad del dataset para análisis posteriores.
+
+# 8. Conclusiones
+
+El presente análisis exploratorio y depuración del dataset *NCR Ride Bookings* ha permitido identificar y tratar los principales problemas de calidad presentes en los datos. A continuación se resumen los hallazgos más relevantes y las decisiones tomadas.
+
+## 8.1 Problemas de calidad detectados
+
+Durante la fase de limpieza se identificaron varios problemas estructurales. En primer lugar, múltiples variables numéricas (`booking_value`, `ride_distance`, `avg_vtat`, `avg_ctat`, `driver_ratings`, `customer_rating`) estaban almacenadas como cadenas de texto debido a la presencia del valor `"null"` en lugar de `NA`, lo que requirió una conversión previa antes de cualquier análisis. Adicionalmente, los identificadores `booking_id` y `customer_id` contenían comillas escapadas que fueron eliminadas mediante limpieza de texto.
+
+## 8.2 Duplicados
+
+El análisis de duplicados a tres niveles reveló la ausencia de filas completamente idénticas y de duplicados lógicos. Sin embargo, se detectaron 1.224 `booking_id` repetidos afectando a 2.457 registros (1,6% del total), cuyos datos son completamente distintos entre sí, lo que apunta a un fallo en el sistema de generación de identificadores. Estos registros fueron marcados con una variable indicadora y conservados al no poder determinar cuál es el registro correcto.
+
+## 8.3 Valores missing
+
+El 11,2% del dataset presenta valores ausentes, distribuidos de forma no aleatoria. Se identificaron dos patrones MNAR diferenciados: un MNAR estructural en variables como `booking_value`, `ride_distance` y `driver_ratings`, cuyos missings responden a la imposibilidad lógica de registrar datos en viajes no completados; y un MNAR en `customer_rating` para viajes completados, atribuible a la decisión voluntaria del cliente de no valorar el servicio. En ningún caso se realizaron imputaciones, dado que introducir valores artificiales distorsionaría el análisis.
+
+## 8.4 Valores atípicos
+
+La detección de outliers se abordó mediante dos enfoques complementarios. Los métodos univariantes (IQR y Z-score) permitieron identificar valores extremos en variables como `booking_value` y `ride_distance`. El algoritmo LOF añadió una perspectiva multivariante, detectando registros atípicos por la combinación inusual de sus variables, principalmente viajes de larga distancia con valor económico elevado y valoraciones bajas. Los outliers identificados no presentan valores imposibles sino combinaciones legítimas pero inusuales, por lo que fueron marcados y conservados.
+
+## 8.5 Dataset final
+
+Tras el proceso de depuración el dataset conserva sus 150.000 registros originales, enriquecido con tres variables indicadoras: `id_duplicado`, `rating_provided` y `es_outlier_lof`. Las decisiones de tratamiento adoptadas priorizan la transparencia y la trazabilidad frente a la modificación arbitraria de los datos, siguiendo los principios del análisis exploratorio riguroso.
+
+```{r}
+source("Funciones_propias.R")
+
+# UNIVARIANTE — todas las numéricas de golpe
+numeric_vars <- names(data)[sapply(data, is.numeric)]
+lapply(numeric_vars, function(v) outliers_extreme(data, v))
+
+# BIVARIANTE — cuantitativa vs cualitativa
+bivariante_box(data, "booking_value", "vehicle_type")
+bivariante_box(data, "booking_value", "booking_status")
+
+# BIVARIANTE — cuantitativa vs cuantitativa
+bivariante_scatter(data, "ride_distance", "booking_value")
+bivariante_scatter(data, "ride_distance", "avg_ctat")
+
+# MULTIVARIANTE — LOF completo
+datos_lof <- calcular_lof(data, umbral = 1.5)
+```
+
+# 9. Predicción de cancelaciones (consulta el repositorio) 
+
+A continuación, entrenaré un modelo que aprenda de los viajes históricos para predecir si un cliente cancelará su reserva (`cancelled_rides_by_customer` = 1) o no (= 0), usando el resto de variables como predictores. Para ello, usaré 'XGBoost', presentado en el siguiente archivo.
