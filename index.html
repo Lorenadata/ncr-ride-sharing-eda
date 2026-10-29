@@ -2244,7 +2244,7 @@ vertical-align: -.125em;
   <li><a href="#valores-atípicos" id="toc-valores-atípicos" class="nav-link" data-scroll-target="#valores-atípicos">8.4 Valores atípicos</a></li>
   <li><a href="#dataset-final" id="toc-dataset-final" class="nav-link" data-scroll-target="#dataset-final">8.5 Dataset final</a></li>
   </ul></li>
-  <li><a href="#predicción-de-cancelaciones-consulta-el-repositorio" id="toc-predicción-de-cancelaciones-consulta-el-repositorio" class="nav-link" data-scroll-target="#predicción-de-cancelaciones-consulta-el-repositorio">9. Predicción de cancelaciones (consulta el repositorio)</a></li>
+  <li><a href="#predicción-de-cancelaciones" id="toc-predicción-de-cancelaciones" class="nav-link" data-scroll-target="#predicción-de-cancelaciones">9. Predicción de cancelaciones</a></li>
   </ul>
 </nav>
 </div>
@@ -6962,9 +6962,9 @@ Removed 48000 rows containing missing values or values outside the scale range
 </div>
 </section>
 </section>
-<section id="predicción-de-cancelaciones-consulta-el-repositorio" class="level1">
-<h1>9. Predicción de cancelaciones (consulta el repositorio)</h1>
-<p>A continuación, entrenaré un modelo que aprenda de los viajes históricos para predecir si un cliente cancelará su reserva (<code>cancelled_rides_by_customer</code> = 1) o no (= 0), usando el resto de variables como predictores. Para ello, usaré ‘XGBoost’, presentado en el siguiente archivo.</p>
+<section id="predicción-de-cancelaciones" class="level1">
+<h1>9. Predicción de cancelaciones</h1>
+<p>A continuación, entrenaré un modelo que aprenda de los viajes históricos para predecir si un cliente cancelará su reserva (<code>cancelled_rides_by_customer</code> = 1) o no (= 0), usando solo la información disponible en el momento de la predicción: muchas variables de este dataset solo existen si el viaje se hizo, y usarlas sería hacer trampa. El modelo, con XGBoost, está en un informe aparte: <strong><a href="modelo_cancelaciones.html">¿Se puede predecir quién cancelará un viaje?</a></strong>. Spoiler: con las variables disponibles al reservar, no; y la señal que aparece con el conductor asignado resulta ser una regla artificial del generador de estos datos sintéticos.</p>
 </section>
 
 </main>

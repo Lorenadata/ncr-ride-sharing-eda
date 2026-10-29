@@ -4,9 +4,10 @@
 # Variables permitidas en cada escenario.
 #   reserva:    lo que se sabe cuando el cliente pide el viaje.
 #   asignacion: además, el tiempo estimado de llegada del vehículo (avg_vtat), que solo existe con conductor asignado.
+# El mes no se usa: con un solo año de datos y partición temporal, los meses de test nunca aparecen al entrenar.
 PERMITIDAS <- list(
-  reserva = c("mes", "dia_semana", "finde", "hora", "franja", "vehicle_type", "pickup_location", "drop_location"),
-  asignacion = c("mes", "dia_semana", "finde", "hora", "franja", "vehicle_type", "pickup_location", "drop_location", "avg_vtat")
+  reserva = c("dia_semana", "finde", "hora", "franja", "vehicle_type", "pickup_location", "drop_location"),
+  asignacion = c("dia_semana", "finde", "hora", "franja", "vehicle_type", "pickup_location", "drop_location", "avg_vtat")
 )
 
 # Lee el CSV de Kaggle con los nombres en snake_case, sin comillas sobrantes en los IDs y con "null" como NA.
@@ -34,7 +35,6 @@ crear_variables <- function(df, escenario = c("reserva", "asignacion")) {
   if (anyNA(h) || any(h < 0 | h > 23)) stop("Hay valores de hora imposibles en 'time' (se esperaba HH:MM:SS entre 00 y 23)")
   if (anyNA(df$date)) stop("Hay fechas vacías o inválidas en 'date'")
   out <- data.frame(
-    mes = factor(format(df$date, "%m")),
     dia_semana = factor(as.POSIXlt(df$date)$wday, levels = 0:6),
     finde = as.integer(as.POSIXlt(df$date)$wday %in% c(0, 6)),
     hora = h,

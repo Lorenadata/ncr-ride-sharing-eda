@@ -42,12 +42,34 @@ All 150,000 records are kept, with three indicator columns added so that downstr
 | `rating_provided` | Customer left a rating |
 | `es_outlier_lof` | Flagged as a multivariate outlier by LOF |
 
+## Can cancellations be predicted?
+
+**[📄 Model report (Spanish)](https://lorenadata.github.io/ncr-ride-sharing-eda/modelo_cancelaciones.html)**
+
+An XGBoost model that predicts whether the **customer** will cancel a booking (7.0% of bookings), built without data leakage. Variables that only exist when a ride happens (fare, distance, payment method, ratings) are excluded, the split is temporal (train on January–September 2024, test on October–December), and the model is compared against simple baselines.
+
+| Test set (Oct–Dec 2024) | PR-AUC | ROC-AUC |
+|---|---|---|
+| Baseline (no skill) | 0.070 | 0.500 |
+| Logistic regression | 0.072 | 0.508 |
+| **XGBoost, at booking time** | **0.071** | **0.502** |
+| XGBoost, once a driver is assigned (+ vehicle arrival time) | 0.484 | 0.773 |
+
+- **At booking time there is no signal.** No model beats chance with time, day, pickup, drop-off and vehicle type.
+- **With the vehicle arrival time the model looks good, but it is an artefact.** 98.8% of the gain comes from that one variable, and in this dataset every arrival time above 15 minutes belongs to a customer cancellation: at its chosen threshold the model is 99.7% precise but only finds 34.9% of cancellations, exactly the ones above that cut-off. The value is uniformly distributed in a different range for each booking status, which is the generator's rule rather than human behaviour. Booking-status counts are also exact round numbers (93,000, 27,000, 10,500…).
+- **What this project shows:** defining the prediction moment, excluding leakage, a temporal split, baselines, and distrusting a result that is too good.
+
+Feature preparation lives in `R/features.R` and is covered by `testthat` tests (`tests/testthat/`), including a check that no excluded variable can reach the model.
+
 ## Repository structure
 
 ```
 .
 ├── ncr_ride_sharing_eda.qmd   # Analysis source (Quarto)
 ├── Funciones_propias.R        # Helper functions (IQR outliers, bivariate plots, LOF)
+├── modelo_cancelaciones.qmd   # Cancellation model (Quarto) → modelo_cancelaciones.html
+├── R/features.R               # Leakage-safe feature preparation
+├── tests/testthat/            # Tests for the feature preparation
 └── index.html                 # Rendered report, served by GitHub Pages
 ```
 
@@ -57,7 +79,8 @@ All 150,000 records are kept, with three indicator columns added so that downstr
 2. Install the dependencies:
    ```r
    install.packages(c("tidyverse", "naniar", "DataExplorer", "dbscan",
-                      "patchwork", "janitor", "hms", "class"))
+                      "patchwork", "janitor", "hms", "class",
+                      "xgboost", "PRROC", "pROC", "Matrix", "testthat"))
    ```
 3. Render `ncr_ride_sharing_eda.qmd` with Quarto.
 

@@ -57,3 +57,13 @@ test_that("la partición temporal no deja fechas de octubre en train", {
   expect_true(all(p$test$date >= as.Date("2024-10-01")))
   expect_equal(nrow(p$train) + nrow(p$test), 6)
 })
+
+test_that("no se usa el mes: con un año de datos los meses de test nunca se ven al entrenar", {
+  expect_false("mes" %in% PERMITIDAS$reserva)
+})
+
+test_that("dia_semana tiene siempre sus 7 niveles aunque el subconjunto tenga un solo día", {
+  v <- crear_variables(ejemplo()[1, ], "reserva")
+  expect_equal(nlevels(v$dia_semana), 7)
+  expect_equal(nlevels(v$franja), 4)
+})

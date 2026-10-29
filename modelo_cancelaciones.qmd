@@ -1,0 +1,201 @@
+---
+title: "¿Se puede predecir quién cancelará un viaje?"
+subtitle: "Modelo XGBoost de cancelaciones del cliente, evaluado sin fuga de información"
+author: "Lorena Marcos"
+lang: es
+format:
+  html:
+    toc: true
+    toc-title: "Contenidos"
+    code-fold: true
+    code-summary: "Ver código"
+    embed-resources: true
+    theme: flatly
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+suppressPackageStartupMessages({ library(xgboost); library(PRROC); library(pROC); library(Matrix); library(ggplot2) })
+source("R/features.R")
+set.seed(2026)
+pct <- function(x, d = 1) paste0(format(round(100 * x, d), decimal.mark = ",", nsmall = d), " %")
+num <- function(x, d = 3) format(round(x, d), decimal.mark = ",", nsmall = d)
+miles <- function(x) format(x, big.mark = ".", decimal.mark = ",")
+
+d <- crear_target(leer_reservas("archive/ncr_ride_bookings.csv"))
+prev <- mean(d$cancela_cliente)
+```
+
+## 1. La pregunta
+
+En el [análisis exploratorio](index.html) limpié 150.000 reservas de una plataforma de viajes. La pregunta natural después es: **¿se puede saber de antemano si un cliente va a cancelar su reserva?** El `r pct(prev)` de las reservas termina así (`r miles(sum(d$cancela_cliente))` casos).
+
+Lo importante es *en qué momento* se predice, porque eso decide qué información es legítima:
+
+- **Escenario A, al reservar:** solo se sabe cuándo y desde dónde se pide el viaje, a dónde va y en qué tipo de vehículo.
+- **Escenario B, con conductor asignado:** además se conoce el tiempo estimado de llegada del vehículo (`avg_vtat`).
+
+## 2. Qué variables no se pueden usar (fuga de información)
+
+Un modelo que use información posterior a la predicción parece buenísimo y no sirve para nada. En el exploratorio vi que muchas variables faltan **justo** en los viajes cancelados (un faltante estructural, MNAR). Eso las convierte en una pista perfecta del resultado, y por tanto en trampa:
+
+| Variable | Por qué se excluye |
+|---|---|
+| `booking_value`, `ride_distance`, `payment_method` | Solo existen si el viaje se hizo: su ausencia delata la cancelación |
+| `avg_ctat`, `driver_ratings`, `customer_rating` | Se miden durante o después del viaje |
+| `booking_status`, motivos de cancelación, marcas de incompleto | Son el resultado mismo |
+| `customer_id` | El `r pct(mean(table(d$customer_id) == 1))` de los clientes aparece una sola vez: no hay historial que aprender |
+| `date` (mes) | Con un solo año de datos y partición temporal, los meses de test nunca aparecen al entrenar |
+
+Las variables permitidas están fijadas en `R/features.R` y tienen tests (`tests/testthat/`) que comprueban que no se cuela ninguna otra.
+
+## 3. Señales de que los datos son sintéticos
+
+```{r sintetico}
+tabla <- as.data.frame(table(Estado = d$booking_status))
+tabla
+```
+
+Las cuentas por estado son números redondos exactos (`r paste(miles(sort(table(d$booking_status), decreasing = TRUE)), collapse = ", ")`). Eso no ocurre en datos reales. Lo tengo en cuenta al interpretar todo lo que sigue.
+
+## 4. Partición temporal
+
+```{r particion}
+corte <- as.Date("2024-10-01"); corte_val <- as.Date("2024-09-01")
+prep <- function(esc, filas = rep(TRUE, nrow(d))) {
+  dd <- d[filas, ]
+  p <- particion_temporal(dd, corte)
+  fit <- p$train[p$train$date < corte_val, ]
+  val <- p$train[p$train$date >= corte_val, ]
+  X <- lapply(list(fit = fit, val = val, train = p$train, test = p$test),
+              function(x) cbind(crear_variables(x, esc), y = x$cancela_cliente))
+  for (col in c("pickup_location", "drop_location", "vehicle_type")) {
+    frecuentes <- names(which(table(X$fit[[col]]) >= 200))
+    for (k in names(X)) X[[k]][[col]] <- factor(ifelse(X[[k]][[col]] %in% frecuentes, X[[k]][[col]], "otra"), levels = c(frecuentes, "otra"))
+  }
+  X
+}
+XA <- prep("reserva")
+```
+
+Se entrena con enero–septiembre de 2024 y se evalúa con octubre–diciembre (`r miles(nrow(XA$train))` y `r miles(nrow(XA$test))` reservas). Es lo que pasaría en la realidad: el modelo se construye con el pasado y se usa en el futuro. Una partición aleatoria mezclaría días de test en el entrenamiento y daría una evaluación optimista.
+
+Dentro del entrenamiento, **septiembre se reserva como validación** para elegir los hiperparámetros y el umbral de decisión. **El test no se toca hasta el final.**
+
+## 5. Modelos
+
+Se comparan tres modelos sobre las mismas variables:
+
+1. **Clase mayoritaria:** predecir siempre "no cancela". Su PR-AUC es igual a la proporción de cancelaciones: es el listón mínimo.
+2. **Regresión logística:** la referencia simple e interpretable.
+3. **XGBoost:** con parada temprana sobre la validación y una búsqueda pequeña de hiperparámetros (`max_depth` ∈ {3, 5}, `eta` ∈ {0,05; 0,1}, `scale_pos_weight` ∈ {1, 13}).
+
+La métrica principal es **PR-AUC** y no la exactitud: con un `r pct(prev)` de positivos, un modelo que diga siempre "no" acierta el `r pct(1 - prev)` y no sirve para nada.
+
+```{r modelos}
+mm <- function(x) sparse.model.matrix(y ~ . - 1, data = x)
+prauc <- function(s, y) pr.curve(scores.class0 = s[y == 1], scores.class1 = s[y == 0])$auc.integral
+rocauc <- function(s, y) as.numeric(auc(roc(y, s, quiet = TRUE)))
+
+evaluar <- function(X) {
+  M <- lapply(X, mm)
+  lg <- glm(y ~ ., data = X$train, family = binomial())
+  p_lg <- predict(lg, X$test, type = "response")
+
+  dfit <- xgb.DMatrix(M$fit, label = X$fit$y); dval <- xgb.DMatrix(M$val, label = X$val$y)
+  mejor <- NULL
+  for (md in c(3, 5)) for (eta in c(.05, .1)) for (spw in c(1, 13)) {
+    m <- xgb.train(params = list(objective = "binary:logistic", eval_metric = "aucpr", max_depth = md, eta = eta, scale_pos_weight = spw, nthread = 4),
+                   data = dfit, nrounds = 600, evals = list(val = dval), early_stopping_rounds = 40, verbose = 0)
+    pv <- predict(m, dval)
+    sc <- prauc(pv, X$val$y)
+    if (is.null(mejor) || sc > mejor$sc) mejor <- list(sc = sc, md = md, eta = eta, spw = spw, it = as.numeric(xgb.attr(m, "best_iteration")), pv = pv)
+  }
+  # Umbral: el que maximiza F1 en VALIDACIÓN (nunca en test).
+  ths <- seq(0.01, 0.99, by = 0.01)
+  f1 <- sapply(ths, function(t) { pr <- mejor$pv >= t; tp <- sum(pr & X$val$y == 1); if (tp == 0) 0 else 2 * tp / (sum(pr) + sum(X$val$y == 1)) })
+  umbral <- ths[which.max(f1)]
+
+  final <- xgb.train(params = list(objective = "binary:logistic", max_depth = mejor$md, eta = mejor$eta, scale_pos_weight = mejor$spw, nthread = 4),
+                     data = xgb.DMatrix(M$train, label = X$train$y), nrounds = max(1, mejor$it), verbose = 0)
+  p_x <- predict(final, xgb.DMatrix(M$test))
+  y <- X$test$y
+  pred <- as.integer(p_x >= umbral)
+  imp <- xgb.importance(model = final)
+  imp$variable <- sub("^(pickup_location|drop_location|vehicle_type|dia_semana|franja).*$", "\\1", imp$Feature)
+  imp <- aggregate(Gain ~ variable, imp, sum); imp <- imp[order(-imp$Gain), ]
+  list(
+    prevalencia = mean(y),
+    base = list(pr_auc = prauc(rep(0.5, length(y)) + runif(length(y), 0, 1e-9), y)),
+    logistica = list(pr_auc = prauc(p_lg, y), roc_auc = rocauc(p_lg, y)),
+    xgboost = list(pr_auc = prauc(p_x, y), roc_auc = rocauc(p_x, y), umbral = umbral,
+                   precision = if (sum(pred) == 0) 0 else sum(pred & y == 1) / sum(pred), recall = sum(pred & y == 1) / sum(y == 1)),
+    hiper = mejor[c("md", "eta", "spw", "it")], importancia = imp, p_test = p_x, y_test = y, X_test = X$test,
+    confusion = table(Real = y, Predicho = pred)
+  )
+}
+A <- evaluar(XA)
+stopifnot(abs(A$base$pr_auc - A$prevalencia) < 0.005)
+```
+
+## 6. Resultados en test: escenario A, al reservar
+
+```{r tabla-a}
+tab <- function(R) data.frame(
+  Modelo = c("Clase mayoritaria", "Regresión logística", "XGBoost"),
+  `PR-AUC` = num(c(R$base$pr_auc, R$logistica$pr_auc, R$xgboost$pr_auc)),
+  `ROC-AUC` = c("0,500", num(R$logistica$roc_auc), num(R$xgboost$roc_auc)), check.names = FALSE)
+knitr::kable(tab(A))
+```
+
+**XGBoost no aprende nada útil al reservar.** Su PR-AUC (`r num(A$xgboost$pr_auc)`) es prácticamente igual a la de predecir al azar (`r num(A$base$pr_auc)`) y su ROC-AUC (`r num(A$xgboost$roc_auc)`) está en 0,5. La regresión logística tampoco. Las variables disponibles al reservar (hora, día, origen, destino, vehículo) **no contienen información sobre la cancelación**.
+
+```{r pr-a, fig.height=4}
+pr_df <- function(R, nombre) { pc <- pr.curve(scores.class0 = R$p_test[R$y_test == 1], scores.class1 = R$p_test[R$y_test == 0], curve = TRUE); data.frame(recall = pc$curve[, 1], precision = pc$curve[, 2], modelo = nombre) }
+ggplot(pr_df(A, "XGBoost (A)"), aes(recall, precision)) + geom_line(colour = "#2c7bb6") +
+  geom_hline(yintercept = A$prevalencia, linetype = 2) + annotate("text", x = .8, y = A$prevalencia + .01, label = "azar") +
+  coord_cartesian(ylim = c(0, 0.2)) + theme_minimal() + labs(title = "Curva precisión–recall en test (escenario A)", x = "Recall", y = "Precisión")
+```
+
+Es el resultado esperable si los datos son sintéticos: las cancelaciones se habrían generado al azar, sin relación con la hora ni con el lugar.
+
+## 7. Escenario B: con el conductor ya asignado
+
+```{r escenario-b}
+XB <- prep("asignacion", !is.na(d$avg_vtat))
+B <- evaluar(XB)
+knitr::kable(tab(B))
+```
+
+Aquí sí hay señal: PR-AUC de `r num(B$xgboost$pr_auc)` frente a `r num(B$base$pr_auc)` del azar, y ROC-AUC de `r num(B$xgboost$roc_auc)`. Pero toda viene de una sola variable:
+
+```{r importancia-b}
+knitr::kable(head(transform(B$importancia, Gain = pct(Gain)), 5), row.names = FALSE, col.names = c("Variable", "Importancia (gain)"))
+```
+
+Y al mirar esa variable aparece la explicación:
+
+```{r vtat, fig.height=4}
+v <- d[!is.na(d$avg_vtat), ]
+ggplot(v, aes(avg_vtat, fill = booking_status == "Cancelled by Customer")) + geom_histogram(binwidth = 0.5, position = "identity", alpha = .6) +
+  scale_fill_manual(values = c("grey60", "#d7301f"), labels = c("Resto", "Cancela el cliente"), name = NULL) + theme_minimal() +
+  labs(title = "Tiempo de llegada del vehículo según el resultado", x = "avg_vtat (minutos)", y = "Reservas")
+rangos <- aggregate(avg_vtat ~ booking_status, v, range)
+```
+
+Cada estado tiene su tiempo de llegada repartido **de forma uniforme en un rango propio**, y **todo valor por encima de `r max(v$avg_vtat[v$booking_status != "Cancelled by Customer"])` minutos es una cancelación del cliente**. Eso no es comportamiento humano: es la regla con la que se generaron los datos. El modelo no aprende que la gente cancela cuando espera mucho; aprende el generador.
+
+## 8. Conclusión
+
+- Con las variables disponibles al reservar, **no es posible predecir las cancelaciones** en este dataset: ningún modelo supera al azar.
+- Con el tiempo de llegada, el modelo parece bueno, pero solo porque **descubre una regla artificial** del generador de datos.
+- En datos reales, que la espera haga cancelar es una hipótesis razonable que merecería probarse. **Este dataset no permite confirmarla.**
+- Lo que demuestra este ejercicio es el proceso: definir el momento de la predicción, excluir la fuga de información, usar una partición temporal, comparar con referencias simples y **desconfiar de un resultado demasiado bueno**.
+
+```{r guardar}
+dir.create("modelo", showWarnings = FALSE)
+saveRDS(list(A = A[c("prevalencia", "base", "logistica", "xgboost", "hiper", "importancia")], B = B[c("prevalencia", "base", "logistica", "xgboost", "hiper", "importancia")],
+             test_A = data.frame(XA$test[c("vehicle_type", "franja", "finde")], p = A$p_test)), "modelo/resultados.rds")
+```

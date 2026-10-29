@@ -629,6 +629,6 @@ bivariante_scatter(data, "ride_distance", "avg_ctat")
 datos_lof <- calcular_lof(data, umbral = 1.5)
 ```
 
-# 9. Predicción de cancelaciones (consulta el repositorio) 
+# 9. Predicción de cancelaciones 
 
-A continuación, entrenaré un modelo que aprenda de los viajes históricos para predecir si un cliente cancelará su reserva (`cancelled_rides_by_customer` = 1) o no (= 0), usando el resto de variables como predictores. Para ello, usaré 'XGBoost', presentado en el siguiente archivo.
+A continuación, entrenaré un modelo que aprenda de los viajes históricos para predecir si un cliente cancelará su reserva (`cancelled_rides_by_customer` = 1) o no (= 0), usando solo la información disponible en el momento de la predicción: muchas variables de este dataset solo existen si el viaje se hizo, y usarlas sería hacer trampa. El modelo, con XGBoost, está en un informe aparte: **[¿Se puede predecir quién cancelará un viaje?](modelo_cancelaciones.html)**. Spoiler: con las variables disponibles al reservar, no; y la señal que aparece con el conductor asignado resulta ser una regla artificial del generador de estos datos sintéticos.
