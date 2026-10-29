@@ -75,7 +75,7 @@ Las variables 'Date' y 'Time' han sido correctamente interpretadas como
 almacenadas como <chr>, lo que sugiere la presencia de valores interpretados incorrectamente. Esto se analizará en detalle en la sección 3. Además, variables como 'Payment Method' o 'Booking Status' deberían interpretarse como <factor>.
 "
 
-summary(data)
+summary(dplyr::mutate(as.data.frame(data), Time = as.character(Time)))  # hms no se resume bien con vctrs reciente
 
 ```
 
@@ -179,7 +179,7 @@ data <- data |>
       customer_rating > 1 & customer_rating <= 2 ~ "Mal",   
       customer_rating > 2 & customer_rating <= 3 ~ "Normal",
       customer_rating > 3 & customer_rating <= 4 ~ "Bien", 
-      driver_ratings > 4 ~ 'Muy bien'
+      customer_rating > 4 ~ 'Muy bien'
     ),
     customer_ratings_factor = factor(customer_ratings_factor, levels = c("Pésimo", "Mal", "Normal", "Bien", "Muy bien"))
   )
